@@ -9,7 +9,7 @@ contract Mortal {
         _
     }
     function kill(address _to) isOwner {
-        suicide(_to);
+        selfdestruct(_to);
     }
 }
 
@@ -28,6 +28,7 @@ contract StartWithoutMe is Mortal {
     uint portion;
     mapping (address => uint) public deposits;
     mapping (address => uint) public nTries;
+    mapping (address => uint) public commitment;
     mapping (address => bool) public present;
 
     modifier noDeposit() {
@@ -77,22 +78,39 @@ contract StartWithoutMe is Mortal {
     function i_promise_to_be_on_time() noDeposit() isStatus(State.stWaitingForN) {
 
         // wrong deposit amount?
-        if (msg.value != deposit)
+        if (msg.value <= deposit)
             throw;
 
         deposits[msg.sender] = msg.value;
         totalDeposits += msg.value;
-        evtDepositAccepted(msg.sender, now);
+        evtDepositAccepted(msg.sender, msg.value);
     }
 
     // Users confirm they are present
-    function i_am_here(string ch) hasDeposit() noAmount() isStatus(State.stPlaying) {
+    function i_am_here(string ch, string randomData) hasDeposit() noAmount() isStatus(State.stPlaying) {
 
         nTries[msg.sender] = nTries[msg.sender]+1;
         if (nTries[msg.sender] > maxTries)
             throw;
+            
+        commitment[msg.sender] = sha3(ch, randomData) returns (bytes32);
+        
+        evtCommittmentMade(msg.sender, commitment[msg.sender]);
+    }
 
-        if (compareCharAt(msg.sender, ch, nChar))
+    // Meeting coordinator closes the game which releases the deposits and distributes the unclaimed deposits
+    function closeAttendence() isStatus(State.stPlaying) noAmount() isOwner() {
+        status = State.stClosed;
+        portion = totalDeposits / nPresent;
+    }
+
+    // Each person present must call the retrieve function to the their portion.
+    function retrieveMyReward(randomData) isStatus(State.stClosed) isPresent() {
+        // Has the caller gotten their excess yet? We use present to notate
+        // whether or not the user was there, and also whether or not they've
+        // been paid out, thus the isPresent modifier above.
+        
+        if (compareCharAt(randomData, nChar))
         {
             // refund the users deposit
             uint amt2Send = deposits[msg.sender];
@@ -107,31 +125,22 @@ contract StartWithoutMe is Mortal {
             }
             present[msg.sender] = true;
             evtDepositRefunded(msg.sender,amt2Send);
+            
+            present[msg.sender] = false;
+            if (!msg.sender.send(portion))
+                throw;
+            
             return;
         }
-
-        // user sent wrong character
+    
+    // user sent wrong character
         evtFailedAttempt(msg.sender,ch);
     }
 
-    // Meeting coordinator closes the game which releases the deposits and distributes the unclaimed deposits
-    function closeAttendence() isStatus(State.stPlaying) noAmount() isOwner() {
-        status = State.stClosed;
-        portion = totalDeposits / nPresent;
-    }
-
-    // Each person present must call the retrieve function to the their portion.
-    function retrieveMyReward() isStatus(State.stClosed) noAmount() isPresent() {
-        // Has the caller gotten their excess yet? We use present to notate
-        // whether or not the user was there, and also whether or not they've
-        // been paid out, thus the isPresent modifier above.
-        present[msg.sender] = false;
-        if (!msg.sender.send(portion))
-            throw;
-    }
-
     // After two weeks, the owner may collect the remain balances of anyone
-    // who has not retreived thier share
+    // who has not retreived thier share. Possible feature add on. The owner could 
+    // set an account that recieves the money at the end. For example, a charity,
+    // or maybe the catering buisness, and then they are reimbursed.
     function finalClose() isStatus(State.stClosed) noAmount() isOwner() {
         // simply send the balance of the contract to the owner who may choose to
         // reimburse any remaining 'present' account (or not).
@@ -160,18 +169,12 @@ contract StartWithoutMe is Mortal {
         status = State.stPlaying;
     }
 
-    function compareCharAt(address addr, string ch, uint8 at) private returns (bool) {
-        bytes memory a = toBytes(addr);
-        return (a[at] == bytes(ch)[0]);
-    }
-
-    function toBytes(address x) private returns (bytes b) {
-        b = new bytes(20);
-        for (uint i = 0; i < 20; i++)
-        b[i] = byte(uint8(uint(x) / (2**(8*(19 - i)))));
+    function compareCharAt(string randomData, uint8 nChar) private returns (bool) {
+    return commitment[msg.sender] == sha3(nChar, randomData);
     }
 
     event evtDepositAccepted(address addr, uint timeStamp);
+    event evtCommittmentMade(address addr, uint commitment);
     event evtFailedAttempt(address addr, string ch);
     event evtDepositRefunded(address addr, uint amount);
     event evtDepositRefundFailed(address addr, uint amount);
